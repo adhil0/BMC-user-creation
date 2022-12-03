@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Temporary YAML file that holds actual creds
+test.yml
