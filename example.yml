@@ -1,0 +1,10 @@
+test:
+    admin_user: user
+    admin_password: password
+    new_user: user
+    new_password: password
+test2:
+    admin_user: user
+    admin_password: password
+    new_user: user
+    new_password: password
