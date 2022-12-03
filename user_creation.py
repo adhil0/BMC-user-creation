@@ -12,17 +12,18 @@ def main() -> None:
     """Main function"""
     # Get the command line arguments from the user.
     parser = argparse.ArgumentParser(
-        description="GLPI Computer REST reservation check."
+        description="Create new BMC Users"
     )
     parser.add_argument(
         "-i",
         "--info",
         metavar="info",
         help="path to credential YAML file",
+        required=True
     )
     args = parser.parse_args()
     info_path = args.info
-    with open(info_path, "r"):
+    with open(info_path, "r") as info_path:
         info_dict = yaml.safe_load(info_path)
     print(info_dict)
 
