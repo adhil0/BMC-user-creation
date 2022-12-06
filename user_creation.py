@@ -1,11 +1,9 @@
-# TODO: take in yaml of IP's and creds, and new user/pass
-# TODO: check if all creds present
-# TODO: go thru existing accounts and check if username glpi exists at redfish/v1/AccountService/Accounts/ ['UserName']
-# TODO: if not, create one
 import urllib3
 import argparse
 import yaml
 import redfish
+import json
+import logging
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -25,7 +23,6 @@ def main() -> None:
     info_path = args.info
     with open(info_path, "r") as info_path:
         info_dict = yaml.safe_load(info_path)
-    print(info_dict)
 
     for machine in info_dict:
         key_list = list(info_dict[machine].keys())
@@ -44,13 +41,68 @@ def main() -> None:
         base_url = "https://" + machine
         REDFISH_OBJ = redfish.redfish_client(
             base_url=base_url,
-            username=info_dict[machine]['admin_user'],
-            password=info_dict[machine]['admin_password'],
+            username=info_dict[machine]["admin_user"],
+            password=info_dict[machine]["admin_password"],
             default_prefix="/redfish/v1",
         )
         REDFISH_OBJ.login(auth="session")
-        print(base_url)
-        print(REDFISH_OBJ.get("/redfish/v1/Systems"))
+        system_summary = REDFISH_OBJ.get("/redfish/v1/Systems")
+        system_url = json.loads(system_summary.text)["Members"][0]["@odata.id"]
+        body = {
+            "UserName": info_dict[machine]["new_user"],
+            "Password": info_dict[machine]["new_password"],
+            "RoleId": "ReadOnly",
+            "Enabled": True,
+        }
+        manufacturer = json.loads(REDFISH_OBJ.get(system_url).text)["Manufacturer"]
+
+        if "dell" in manufacturer.lower():
+            # Go through accounts and if ID doesn't have username, add account to that ID.
+            dell_accounts = REDFISH_OBJ.get(
+                "/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/"
+            )
+            if "Members" in dell_accounts.text:
+                for account in json.loads(dell_accounts.text)["Members"]:
+                    account_info = REDFISH_OBJ.get(account["@odata.id"])
+                    account_json = json.loads(account_info.text)
+                    if not account_json["UserName"] and account_json["Id"] != "1":
+                        id = account_json["Id"]
+                        break
+                new_account = REDFISH_OBJ.patch(
+                    "/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/{}".format(id),
+                    body=body,
+                )
+        else:
+            new_account = REDFISH_OBJ.post(
+                "/redfish/v1/AccountService/Accounts", body=body
+            )
+
+        if "error" in new_account.text:
+            try:
+                logging.warning(
+                    "The '{}' account for {} was NOT created due to an error:".format(
+                        info_dict[machine]["new_user"], machine
+                    )
+                    + json.loads(new_account.text)["error"]["@Message.ExtendedInfo"][0][
+                        "Message"
+                    ]
+                )
+            except:
+                logging.warning(
+                    "The '{}' account for {} was NOT created due to an error, and the resulting error message was not parsable by the script.".format(
+                        info_dict[machine]["new_user"], machine
+                    )
+                )
+        else:
+            print(
+                "The '{}' account for {} was created successfully.".format(
+                    info_dict[machine]["new_user"], machine
+                )
+            )
+
+        REDFISH_OBJ.logout()
+
+
 # Executes main if run as a script.
 if __name__ == "__main__":
     main()
