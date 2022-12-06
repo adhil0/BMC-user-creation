@@ -8,4 +8,4 @@ Usage:
     * `pip install -r requirements.txt`
 2. Create YAML file formatted in the same manner as `example.yml`
 3. Run Script:
-    * `python3 user_creation.py -i test.yml`
+    * `python3 user_creation.py -i example.yml`
