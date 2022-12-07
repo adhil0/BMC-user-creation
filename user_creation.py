@@ -48,45 +48,78 @@ def main() -> None:
         REDFISH_OBJ.login(auth="session")
         system_summary = REDFISH_OBJ.get("/redfish/v1/Systems")
         system_url = json.loads(system_summary.text)["Members"][0]["@odata.id"]
-        body = {
-            "UserName": info_dict[machine]["new_user"],
-            "Password": info_dict[machine]["new_password"],
-            "RoleId": "ReadOnly",
-            "Enabled": True,
-        }
-        manufacturer = json.loads(REDFISH_OBJ.get(system_url).text)["Manufacturer"]
+        system_json = json.loads(REDFISH_OBJ.get(system_url).text)
+        manufacturer = system_json["Manufacturer"]
+        if "hp" in manufacturer.lower():
+            # There are differences between iLO 4 and iLO 5. Retrieve the iLO version
+            # of each machine and alter the body variable accordingly
+            body = {
+                "UserName": info_dict[machine]["new_user"],
+                "Password": info_dict[machine]["new_password"],
+            }
 
-        if "dell" in manufacturer.lower():
-            # Go through accounts and if ID doesn't have username, add account to that ID.
-            dell_accounts = REDFISH_OBJ.get(
-                "/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/"
-            )
-            if "Members" in dell_accounts.text:
-                for account in json.loads(dell_accounts.text)["Members"]:
-                    account_info = REDFISH_OBJ.get(account["@odata.id"])
-                    account_json = json.loads(account_info.text)
-                    if not account_json["UserName"] and account_json["Id"] != "1":
-                        id = account_json["Id"]
-                        break
-                new_account = REDFISH_OBJ.patch(
-                    "/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/{}".format(id),
-                    body=body,
-                )
-        else:
+            # Assume iLO 5
+            ilo_version = 5
+            if "Links" in system_json:
+                manager_url = system_json["Links"]["ManagedBy"][0]["@odata.id"]
+            elif "links" in system_json:
+                manager_url = system_json["links"]["ManagedBy"][0]["href"]
+            if manager_url:
+                manager_json = json.loads(REDFISH_OBJ.get(manager_url).text)
+                ilo_version = int(manager_json["FirmwareVersion"][4])
+            if ilo_version == 5:
+                body["RoleId"] = "ReadOnly"
+            else:
+                body["Oem"] = {"Hp": {"Privileges": {"LoginPriv": True}}}
+                body["Oem"]["Hp"]["LoginName"] = info_dict[machine]["new_user"]
             new_account = REDFISH_OBJ.post(
                 "/redfish/v1/AccountService/Accounts", body=body
             )
+        else:
+            body = {
+                "UserName": info_dict[machine]["new_user"],
+                "Password": info_dict[machine]["new_password"],
+                "RoleId": "ReadOnly",
+                "Enabled": True,
+            }
+            if "dell" in manufacturer.lower():
+                # Go through accounts and if ID doesn't have username, add account to that ID.
+                dell_accounts = REDFISH_OBJ.get(
+                    "/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/"
+                )
+                if "Members" in dell_accounts.text:
+                    for account in json.loads(dell_accounts.text)["Members"]:
+                        account_info = REDFISH_OBJ.get(account["@odata.id"])
+                        account_json = json.loads(account_info.text)
+                        if not account_json["UserName"] and account_json["Id"] != "1":
+                            id = account_json["Id"]
+                            break
+                    new_account = REDFISH_OBJ.patch(
+                        "/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/{}".format(id),
+                        body=body,
+                    )
+            else:
+                new_account = REDFISH_OBJ.post(
+                    "/redfish/v1/AccountService/Accounts", body=body
+                )
 
         if "error" in new_account.text:
             try:
-                logging.warning(
-                    "The '{}' account for {} was NOT created due to an error:".format(
-                        info_dict[machine]["new_user"], machine
+                response = json.loads(new_account.text)
+                if "Message" in response["error"]["@Message.ExtendedInfo"][0]:
+                    logging.warning(
+                        "The '{}' account for {} was NOT created due to an error: ".format(
+                            info_dict[machine]["new_user"], machine
+                        )
+                        + response["error"]["@Message.ExtendedInfo"][0]["Message"]
                     )
-                    + json.loads(new_account.text)["error"]["@Message.ExtendedInfo"][0][
-                        "Message"
-                    ]
-                )
+                else:
+                    logging.warning(
+                        "The '{}' account for {} was NOT created due to an error: ".format(
+                            info_dict[machine]["new_user"], machine
+                        )
+                        + response["error"]["@Message.ExtendedInfo"][0]["MessageId"]
+                    )
             except:
                 logging.warning(
                     "The '{}' account for {} was NOT created due to an error, and the resulting error message was not parsable by the script.".format(
