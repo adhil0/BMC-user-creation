@@ -83,9 +83,14 @@ def main() -> None:
             body = {
                 "UserName": info_dict[machine]["new_user"],
                 "Password": info_dict[machine]["new_password"],
-                "RoleId": "ReadOnly",
                 "Enabled": True,
             }
+
+            # Get name of read only role
+            roles = REDFISH_OBJ.get("/redfish/v1/AccountService/Roles")
+            role_id = [role['@odata.id'] for role in json.loads(roles.text)['Members'] if 'readonly' in role['@odata.id'].lower()][0][33:]
+            body["RoleId"] = role_id
+
             if "dell" in manufacturer.lower():
                 # Go through accounts and if ID doesn't have username, add account to that ID.
                 dell_accounts = REDFISH_OBJ.get(
