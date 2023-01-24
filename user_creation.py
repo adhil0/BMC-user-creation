@@ -45,7 +45,11 @@ def main() -> None:
             password=info_dict[machine]["admin_password"],
             default_prefix="/redfish/v1",
         )
-        REDFISH_OBJ.login(auth="session")
+        try:
+            REDFISH_OBJ.login(auth="session")
+        except:
+            print('Unable to login to Redfish for' + machine)
+            continue
         system_summary = REDFISH_OBJ.get("/redfish/v1/Systems")
         system_url = json.loads(system_summary.text)["Members"][0]["@odata.id"]
         system_json = json.loads(REDFISH_OBJ.get(system_url).text)
