@@ -45,7 +45,6 @@ def main():
                 username=info_dict[machine]["admin_user"],
                 password=info_dict[machine]["admin_password"],
                 default_prefix="/redfish/v1",
-                timeout=5,
             )
             redfish_obj.login(auth="session")
         except redfish.rest.v1.ServerDownOrUnreachableError:
@@ -76,22 +75,20 @@ def main():
                 "Enabled": True,
             }
 
-            # Get name of read only role
-            roles = redfish_obj.get("/redfish/v1/AccountService/Roles")
-            try:
-                role_id = [
-                    role["@odata.id"]
-                    for role in roles.dict["Members"]
-                    if "readonly" in role["@odata.id"].lower()
-                ][0][33:]
-            except KeyError:
-                print(f"FAILED: Can't find roles for {machine}")
-                continue
-            body["RoleId"] = role_id
-
             if "dell" in manufacturer.lower():
                 new_account = create_dell_account(redfish_obj, body)
             else:
+                # Get name of read only role
+                roles = redfish_obj.get("/redfish/v1/AccountService/Roles")
+                try:
+                    for role in roles.dict["Members"]:
+                        if "readonly" in role["@odata.id"].lower():
+                            role_id_index = role["@odata.id"].rfind("/")
+                            role_id = role["@odata.id"][role_id_index + 1 :]
+                except KeyError:
+                    print(f"FAILED: Can't find roles for {machine}")
+                    continue
+                body["RoleId"] = role_id
                 new_account = redfish_obj.post(
                     "/redfish/v1/AccountService/Accounts", body=body, timeout=20
                 )
@@ -152,6 +149,7 @@ def create_dell_account(redfish_obj, body):
     """
     # Go through accounts and if ID doesn't have username,
     # add account to that ID.
+    body["RoleId"] = "ReadOnly"
     dell_accounts = redfish_obj.get("/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/")
     if "Members" in dell_accounts.dict:
         for account in dell_accounts.dict["Members"]:
