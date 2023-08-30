@@ -19,6 +19,12 @@ def main():
         help="path to credential YAML file",
         required=True,
     )
+    parser.add_argument(
+        "-m",
+        "--modify",
+        action="store_true",
+        help="Use this flag to modify account password",
+    )
     args = parser.parse_args()
     with open(args.info, "r", encoding="utf-8") as info_path:
         info_dict = yaml.safe_load(info_path)
@@ -63,39 +69,122 @@ def main():
         system_summary = redfish_obj.get("/redfish/v1/Systems")
         system_url = system_summary.dict["Members"][0]["@odata.id"]
         system_json = redfish_obj.get(system_url).dict
-        manufacturer = system_json["Manufacturer"]
-        if "hp" in manufacturer.lower():
-            new_account = create_hp_account(
-                info_dict, machine, system_json, redfish_obj
-            )
+        if args.modify:
+            new_account = modify_accounts(system_json, redfish_obj, info_dict, machine)
         else:
-            body = {
-                "UserName": info_dict[machine]["new_user"],
-                "Password": info_dict[machine]["new_password"],
-                "Enabled": True,
-            }
-
-            if "dell" in manufacturer.lower():
-                new_account = create_dell_account(redfish_obj, body)
-            else:
-                # Get name of read only role
-                roles = redfish_obj.get("/redfish/v1/AccountService/Roles")
-                try:
-                    for role in roles.dict["Members"]:
-                        if "readonly" in role["@odata.id"].lower():
-                            role_id_index = role["@odata.id"].rfind("/")
-                            role_id = role["@odata.id"][role_id_index + 1 :]
-                except KeyError:
-                    print(f"FAILED: Can't find roles for {machine}")
-                    continue
-                body["RoleId"] = role_id
-                new_account = redfish_obj.post(
-                    "/redfish/v1/AccountService/Accounts", body=body, timeout=20
-                )
+            new_account = create_accounts(system_json, redfish_obj, info_dict, machine)
 
         print_response_messages(new_account, info_dict, machine)
 
         redfish_obj.logout()
+
+
+def modify_accounts(system_json, redfish_obj, info_dict, machine):
+    """Modify a pre-existing account's password
+
+    Args:
+        system_json (dict): Basic information about machine
+        redfish_obj (redfish): Redfish session object
+        info_dict (dict): Contains root and new account information
+        machine (string): IP of machine
+
+    Returns:
+        redfish.rest.v1.RestResponse: Response after attempting to modify an account.
+    """
+    manufacturer = system_json["Manufacturer"]
+    if "dell" in manufacturer.lower():
+        new_account = modify_dell_account(info_dict, machine, redfish_obj)
+    else:
+        new_account = modify_generic_account(info_dict, machine, redfish_obj)
+    return new_account
+
+
+def create_accounts(system_json, redfish_obj, info_dict, machine):
+    """Create an account
+
+    Args:
+        system_json (dict): Basic information about machine
+        redfish_obj (redfish): Redfish session object
+        info_dict (dict): Contains root and new account information
+        machine (string): IP of machine
+
+    Returns:
+        redfish.rest.v1.RestResponse: Response after attempting to create an account.
+    """
+    manufacturer = system_json["Manufacturer"]
+    if "hp" in manufacturer.lower():
+        new_account = create_hp_account(info_dict, machine, system_json, redfish_obj)
+    else:
+        body = {
+            "UserName": info_dict[machine]["new_user"],
+            "Password": info_dict[machine]["new_password"],
+            "Enabled": True,
+        }
+        if "dell" in manufacturer.lower():
+            new_account = create_dell_account(redfish_obj, body)
+        else:
+            # Get name of read only role
+            roles = redfish_obj.get("/redfish/v1/AccountService/Roles")
+            try:
+                for role in roles.dict["Members"]:
+                    if "readonly" in role["@odata.id"].lower():
+                        role_id_index = role["@odata.id"].rfind("/")
+                        role_id = role["@odata.id"][role_id_index + 1 :]
+            except KeyError:
+                print(f"FAILED: Can't find roles for {machine}")
+                return None
+            body["RoleId"] = role_id
+
+            new_account = redfish_obj.post(
+                "/redfish/v1/AccountService/Accounts", body=body, timeout=20
+            )
+    return new_account
+
+
+def modify_generic_account(info_dict, machine, redfish_obj):
+    """Modify a pre-existing account for machines that don't need manufacturer specific
+    code
+
+    Args:
+        info_dict (dict): Contains root and new account information
+        machine (string): IP of machine
+        redfish_obj (redfish): Redfish session object
+
+    Returns:
+        redfish.rest.v1.RestResponse: Response after attempting to modify an account.
+    """
+    body = {
+        "Password": info_dict[machine]["new_password"],
+    }
+    username = info_dict[machine]["new_user"]
+    user_id = get_user_id(redfish_obj, username)
+    if user_id is not None:
+        new_account = redfish_obj.patch(
+            f"/redfish/v1/AccountService/Accounts/{user_id}", body=body
+        )
+        return new_account
+
+    return None
+
+
+def get_user_id(redfish_obj, username):
+    """Get the ID of the relevant account
+
+    Args:
+        redfish_obj (redfish): Redfish session object
+        username (string): username of the relevant account
+
+    Returns:
+        string: ID of the relevant account
+    """
+    users = redfish_obj.get("/redfish/v1/AccountService/Accounts")
+    for user in users.dict["Members"]:
+        user_info = redfish_obj.get(user["@odata.id"])
+        if user_info.dict["UserName"] == username:
+            return user_info.dict["Id"]
+
+    print("FAILED: User doesn't exist")
+    return None
 
 
 def create_hp_account(info_dict, machine, system_json, redfish_obj):
@@ -137,6 +226,52 @@ def create_hp_account(info_dict, machine, system_json, redfish_obj):
     return new_account
 
 
+def modify_dell_account(info_dict, machine, redfish_obj):
+    """Change the password of a dell account
+
+    Args:
+        info_dict (dict): Contains root and new account information
+        machine (string): IP of machine
+        redfish_obj (redfish): Redfish session object
+
+    Returns:
+        redfish.rest.v1.RestResponse: Response after attempting to modify an account.
+    """
+    body = {
+        "Password": info_dict[machine]["new_password"],
+    }
+    username = info_dict[machine]["new_user"]
+    user_id = get_dell_user_id(redfish_obj, username)
+    if user_id is not None:
+        new_account = redfish_obj.patch(
+            f"/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/{user_id}", body=body
+        )
+        return new_account
+
+    return None
+
+
+def get_dell_user_id(redfish_obj, username):
+    """Get the ID of the relevant dell account
+
+    Args:
+        redfish_obj (redfish): Redfish session object
+        username (string): username of the relevant dell account
+
+    Returns:
+        string: ID of the relevant dell account
+    """
+    dell_accounts = redfish_obj.get("/redfish/v1/Managers/iDRAC.Embedded.1/Accounts/")
+    if "Members" in dell_accounts.dict:
+        for account in dell_accounts.dict["Members"]:
+            account_info = redfish_obj.get(account["@odata.id"])
+            if account_info.dict["UserName"] == username:
+                return account_info.dict["Id"]
+
+        print(f"FAILED: User doesn't exist for {redfish_obj.get_base_url()}")
+    return None
+
+
 def create_dell_account(redfish_obj, body):
     """Create BMC account for Dell machines
 
@@ -174,40 +309,52 @@ def print_response_messages(new_account, info_dict, machine):
         info_dict (dict): Contains root and new account information
         machine (string): IP of machine
     """
-    if "error" in new_account.text:
-        try:
-            response = new_account.dict
-            if "Message" in response["error"]["@Message.ExtendedInfo"][0]:
+    if new_account is not None:
+        if "error" in new_account.text:
+            try:
+                response = new_account.dict
+                if "Message" in response["error"]["@Message.ExtendedInfo"][0]:
+                    print(
+                        (
+                            f"FAILED: The '{info_dict[machine]['new_user']}' account "
+                            f"for {machine} was NOT created due to an error: "
+                            f"{response['error']['@Message.ExtendedInfo'][0]['Message']}"
+                        )
+                    )
+                else:
+                    if (
+                        "AccountModified"
+                        not in response["error"]["@Message.ExtendedInfo"][0][
+                            "MessageId"
+                        ]
+                    ):
+                        print(
+                            (
+                                f"FAILED: The '{info_dict[machine]['new_user']}' account"
+                                f" for {machine} was NOT created due to an error: "
+                                f"{response['error']['@Message.ExtendedInfo'][0]['MessageId']}"
+                            )
+                        )
+                    else:
+                        print(
+                            f"The '{info_dict[machine]['new_user']}' account for "
+                            f"{machine} was created and/or modified successfully."
+                        )
+            except:
                 print(
                     (
                         f"FAILED: The '{info_dict[machine]['new_user']}' account "
-                        f"for {machine} was NOT created due to an error: "
-                        f"{response['error']['@Message.ExtendedInfo'][0]['Message']}"
+                        f"for {machine} was NOT created due to an error, and the "
+                        "resulting error message was not parsable by the script."
                     )
                 )
-            else:
-                print(
-                    (
-                        f"FAILED: The '{info_dict[machine]['new_user']}' account "
-                        f"for {machine} was NOT created due to an error: "
-                        f"{response['error']['@Message.ExtendedInfo'][0]['MessageId']}"
-                    )
-                )
-        except:
+        else:
             print(
                 (
-                    f"FAILED: The '{info_dict[machine]['new_user']}' account "
-                    f"for {machine} was NOT created due to an error, and the "
-                    "resulting error message was not parsable by the script."
+                    f"The '{info_dict[machine]['new_user']}' account for "
+                    f"{machine} was created and/or modified successfully."
                 )
             )
-    else:
-        print(
-            (
-                f"The '{info_dict[machine]['new_user']}' account for "
-                f"{machine} was created successfully."
-            )
-        )
 
 
 # Executes main if run as a script.
