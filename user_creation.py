@@ -72,8 +72,12 @@ def main():
         if args.modify:
             new_account = modify_accounts(system_json, redfish_obj, info_dict, machine)
         else:
-            new_account = create_accounts(system_json, redfish_obj, info_dict, machine)
-
+            try:
+                new_account = create_accounts(system_json, redfish_obj, info_dict, machine)
+            except KeyError as key_error:
+                print(f"FAILED: The '{info_dict[machine]['new_user']}' account "
+                f"for {machine} was NOT created due to a KeyError: {key_error}")
+                continue
         print_response_messages(new_account, info_dict, machine)
 
         redfish_obj.logout()
@@ -215,7 +219,7 @@ def create_hp_account(info_dict, machine, system_json, redfish_obj):
     if manager_url:
         manager_json = redfish_obj.get(manager_url).dict
         ilo_version = int(manager_json["FirmwareVersion"][4])
-    if ilo_version == 5:
+    if ilo_version == 5 or ilo_version == 6:
         body["RoleId"] = "ReadOnly"
     else:
         body["Oem"] = {"Hp": {"Privileges": {"LoginPriv": True}}}
@@ -310,44 +314,15 @@ def print_response_messages(new_account, info_dict, machine):
         machine (string): IP of machine
     """
     if new_account is not None:
-        if "error" in new_account.text:
-            try:
-                response = new_account.dict
-                if "Message" in response["error"]["@Message.ExtendedInfo"][0]:
-                    print(
-                        (
-                            f"FAILED: The '{info_dict[machine]['new_user']}' account "
-                            f"for {machine} was NOT created due to an error: "
-                            f"{response['error']['@Message.ExtendedInfo'][0]['Message']}"
-                        )
-                    )
-                else:
-                    if (
-                        "AccountModified"
-                        not in response["error"]["@Message.ExtendedInfo"][0][
-                            "MessageId"
-                        ]
-                    ):
-                        print(
-                            (
-                                f"FAILED: The '{info_dict[machine]['new_user']}' account"
-                                f" for {machine} was NOT created due to an error: "
-                                f"{response['error']['@Message.ExtendedInfo'][0]['MessageId']}"
-                            )
-                        )
-                    else:
-                        print(
-                            f"The '{info_dict[machine]['new_user']}' account for "
-                            f"{machine} was created and/or modified successfully."
-                        )
-            except:
-                print(
-                    (
-                        f"FAILED: The '{info_dict[machine]['new_user']}' account "
-                        f"for {machine} was NOT created due to an error, and the "
-                        "resulting error message was not parsable by the script."
-                    )
-                )
+        error_messages = redfish.messages.get_error_messages(new_account)
+        if (
+            error_messages
+            and "The request completed successfully." not in error_messages
+        ):
+            print(
+                f"FAILED: The '{info_dict[machine]['new_user']}' account "
+                f"for {machine} was NOT created due to an error: {error_messages}"
+            )
         else:
             print(
                 (
